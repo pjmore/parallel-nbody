@@ -12,7 +12,7 @@ typedef double v4df __attribute__ ((vector_size (32)));
 #define Hour Minute*60.0
 #define Day Hour*24
 
-#define FL __FILE__ __LINE__
+#define ZL filterp(0,"%d\n",__LINE__);
 
 #define RING_PASS_TAG 0
 #define EMIT_POINT_TAG 1

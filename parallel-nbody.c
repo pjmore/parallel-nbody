@@ -58,10 +58,10 @@ fflush(stdout);\
 
 
 
-static inline int minInt(int,int);
-static inline double Sumv4df(v4df vec);
-static inline v4df Normalize(v4df vec);
-static inline v4df CalculateForce(v4df, v4df, double, double);
+int minInt(int,int);
+double Sumv4df(v4df vec);
+v4df Normalize(v4df vec);
+v4df CalculateForce(v4df, v4df, double, double);
  
 
 
@@ -215,19 +215,6 @@ int main(int argc, char *argv[]){
         }
         MassBuffer = initial_conditions.MassVec;
         n_bodies = initial_conditions.NumBodies;
-        for(int i = 0; i<n_bodies; i++){
-        for(int j = 0; j < 7; j++){
-            if(j<3){
-                printf("%7.3e     ", initial_conditions.PosVelVec[i*6 + j]);
-            }else if(j==3){
-                printf("%7.3e     ",MassBuffer[i]);
-            }else{
-                printf("%7.3e     ", initial_conditions.PosVelVec[i*6 + j-1]);
-            }
-            
-        }
-        printf("\n");
-    }
         printf("Simulating %d bodies\n", n_bodies);
     }
 
@@ -274,7 +261,6 @@ int main(int argc, char *argv[]){
         }
     }
 
-    MPI_Barrier(MPI_COMM_WORLD);
     run_simulation_parallel(MassBuffer, PosVelBuf);
     if(id == 0){
         if(argc >=6){
@@ -298,7 +284,7 @@ int main(int argc, char *argv[]){
 
 
 
-static inline int minInt(int i,int j){
+ int minInt(int i,int j){
     if (i < j){
         return i;
     }
@@ -306,7 +292,7 @@ static inline int minInt(int i,int j){
 }
 
 
-static inline int localToGlobalStartIdx(int sending_id){
+ int localToGlobalStartIdx(int sending_id){
     return sending_id*min_jobs + minInt(sending_id, extra_jobs);
 }
 
@@ -336,7 +322,7 @@ v4df* run_simulation_parallel(double *Masses, double *PosVelBuffer){
 
 
     //These are buffers for the particles owned by other processes
-    v4df *tempPos = (v4df*)aligned_alloc(sizeof(v4df),sizeof(v4df)*max_jobs*2);
+    v4df *tempPos = aligned_alloc(sizeof(v4df),sizeof(v4df)*max_jobs*2);
     v4df *tempForces = tempPos+max_jobs;
 
 
@@ -345,22 +331,19 @@ v4df* run_simulation_parallel(double *Masses, double *PosVelBuffer){
     //Start index of the particles owned by other processes in the main large array
     int temp_glbl_idx;
     //Number of jobs recieved from other processes
-    int num_recv_jobs = num_jobs;
+    int num_recv_jobs;
     MPI_Status recv_status;
-
+    filterp(0, "The maximum number of steps is %d\n", num_steps);
     unsigned int steps_at_next_emit = emit_steps;
-    emitPoints(0, Positions, Masses, num_jobs);
+    //emitPoints(0, Positions, Masses, num_jobs);
     for(unsigned int curr_step = 0; curr_step < num_steps; curr_step++){
-            
-
+        num_recv_jobs = num_jobs;
         //Zero force vector        
         memset(Force, 0, sizeof(v4df)*num_jobs);
         //zero the temporary force vector including the last entry in the position section of the buffer just in case
         memset(tempPos + (max_jobs-1), 0, sizeof(v4df)*(max_jobs+1));
-
         //Copy the new positions to the tempPos vector
         memcpy(tempPos, Positions, sizeof(v4df)*num_jobs);
-        
 
         // The first send will mean that the working set is from the send_id process
         int sending_process_id = recv_from_id;
@@ -368,11 +351,8 @@ v4df* run_simulation_parallel(double *Masses, double *PosVelBuffer){
         for(int ring_pass=0; ring_pass < p-1; ring_pass++){
             //Send num_recv_jobs*4*2 doubles to next process. Four because 4 doubles fit in the vector. 2 becuase that will send both the tempPositions and temp forces in a 
             //single send
-            
-            MPI_Sendrecv_replace((double*)tempPos, num_recv_jobs*4*2, MPI_DOUBLE, send_to_id, RING_PASS_TAG,recv_from_id , RING_PASS_TAG, MPI_COMM_WORLD, &recv_status);
-            MPI_Get_count(&recv_status, MPI_DOUBLE, &num_recv_jobs);
-            
-            num_recv_jobs = num_recv_jobs/8;
+            MPI_Sendrecv_replace((double*)tempPos, max_jobs*4*2, MPI_DOUBLE, send_to_id, RING_PASS_TAG,recv_from_id , RING_PASS_TAG, MPI_COMM_WORLD, NULL);
+            num_recv_jobs = min_jobs + minInt(1, extra_jobs-sending_process_id);
             temp_glbl_idx = localToGlobalStartIdx(sending_process_id);
             // Only calculate if the sending process id is greater than the current one
             if(id < sending_process_id){
@@ -407,7 +387,6 @@ v4df* run_simulation_parallel(double *Masses, double *PosVelBuffer){
     
         MPI_Sendrecv_replace((void*)tempPos, max_jobs*4*2, MPI_DOUBLE, send_to_id , 0, recv_from_id, 0, MPI_COMM_WORLD, &recv_status);
         // pairwise interactions within a job
-
         #ifndef HGHEST_PROCESS_DOES_COMPUTE
         for(int l_idx = 0; l_idx < num_jobs -1;l_idx++){
             for(int u_idx=l_idx+1; u_idx< num_jobs; u_idx++){
@@ -441,31 +420,29 @@ v4df* run_simulation_parallel(double *Masses, double *PosVelBuffer){
             Velocities[local_idx] += AccPortion/dt;
         }
         
-        
+        filterp(0,"Finished step %d\n", curr_step);
         if(steps_at_next_emit == curr_step){
             steps_at_next_emit += emit_steps;
-            
-            emitPoints(curr_step, Positions, Masses, num_jobs);
-            
+            emitPoints(curr_step, Positions, Masses, num_jobs);   
         }
     }
-    emitPoints(num_steps, Positions, Masses, num_jobs);
+    //emitPoints(num_steps, Positions, Masses, num_jobs);
     
 }
 
 
 
-static inline double Sumv4df(v4df vec){
+ double Sumv4df(v4df vec){
     return vec[0]+vec[1]+vec[2];
 }
 
-static inline v4df Normalize(v4df vec){
+ v4df Normalize(v4df vec){
     return vec/hypot(vec[0], hypot(vec[1],vec[2]));
 }
 
 
 
-static inline v4df CalculateForce(v4df PosLoc, v4df PosTemp, double MassLoc, double MassTemp){
+ v4df CalculateForce(v4df PosLoc, v4df PosTemp, double MassLoc, double MassTemp){
     v4df PartialGForce = {0,0,0,0};
     v4df Difference =  PosTemp - PosLoc;
     double Distance2 = Sumv4df(Difference*Difference);
@@ -617,7 +594,6 @@ RawSimulationData parseBodyKinematicsFile(char* filepath){
     in_number = false;
     while(fgets(&str_buff[buff_idx], 256 - buff_idx, fp_body_positions) != NULL){
         if(body_idx >= num_bodies){
-            printf("there aren't that many bodies");
             break;
         }
         int char_index = 0;
